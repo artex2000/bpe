@@ -167,7 +167,7 @@ func InitWindow()  error {
 		cSW_USE_DEFAULT,
 		0,
 		0,
-		instance,
+		instance
 	)
 	if err != nil {
 		log.Println(err)
@@ -185,6 +185,6 @@ func InitWindow()  error {
 		if gotMessage {
 			translateMessage(&msg)
 			dispatchMessage(&msg)
-		} else {
+		}
 	}
 }
