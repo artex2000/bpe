@@ -1,4 +1,4 @@
-package main
+package graphics
 
 import (
 	"log"
@@ -27,27 +27,10 @@ var (
 	pDefWindowProcW   = user32.NewProc("DefWindowProcW")
 	pDestroyWindow    = user32.NewProc("DestroyWindow")
 	pDispatchMessageW = user32.NewProc("DispatchMessageW")
-	pGetMessageW      = user32.NewProc("GetMessageW")
-	pLoadCursorW      = user32.NewProc("LoadCursorW")
+	pPeekMessageW     = user32.NewProc("PeekMessageW")
 	pPostQuitMessage  = user32.NewProc("PostQuitMessage")
 	pRegisterClassExW = user32.NewProc("RegisterClassExW")
 	pTranslateMessage = user32.NewProc("TranslateMessage")
-)
-
-const (
-	cSW_SHOW uint32        = 5
-	cSW_USE_DEFAULT uint32 = 0x80000000
-)
-
-const (
-	cWS_MAXIMIZE_BOX uint32 = 0x00010000
-	cWS_MINIMIZEBOX uint32  = 0x00020000
-	cWS_THICKFRAME uint32   = 0x00040000
-	cWS_SYSMENU uint32      = 0x00080000
-	cWS_CAPTION uint32      = 0x00C00000
-	cWS_VISIBLE uint32      = 0x10000000
-
-	cWS_OVERLAPPEDWINDOW uint32 = 0x00CF0000
 )
 
 func createWindow(className, windowName string, style uint32, x, y, width, height uint32, parent, menu, instance syscall.Handle) (syscall.Handle, error) {
@@ -71,10 +54,23 @@ func createWindow(className, windowName string, style uint32, x, y, width, heigh
 	return syscall.Handle(ret), nil
 }
 
-const (
-	cWM_DESTROY = 0x0002
-	cWM_CLOSE   = 0x0010
-)
+func dispatchMessage(msg *tMSG) {
+	pDispatchMessageW.Call(uintptr(unsafe.Pointer(msg)))
+}
+
+func peekMessage(msg *tMSG, hwnd syscall.Handle, msgFilterMin, msgFilterMax, removeMsg uint32) (bool, error) {
+	ret, _, err := pPeekMessageW.Call(
+		uintptr(unsafe.Pointer(msg)),
+		uintptr(hwnd),
+		uintptr(msgFilterMin),
+		uintptr(msgFilterMax),
+		uintptr(removeMsg),
+	)
+	if int32(ret) == -1 {
+		return false, err
+	}
+	return int32(ret) != 0, nil
+}
 
 func defWindowProc(hwnd syscall.Handle, msg uint32, wparam, lparam uintptr) uintptr {
 	ret, _, _ := pDefWindowProcW.Call(
@@ -84,14 +80,6 @@ func defWindowProc(hwnd syscall.Handle, msg uint32, wparam, lparam uintptr) uint
 		uintptr(lparam),
 	)
 	return uintptr(ret)
-}
-
-func destroyWindow(hwnd syscall.Handle) error {
-	ret, _, err := pDestroyWindow.Call(uintptr(hwnd))
-	if ret == 0 {
-		return err
-	}
-	return nil
 }
 
 type tPOINT struct {
@@ -106,46 +94,6 @@ type tMSG struct {
 	time    uint32
 	pt      tPOINT
 }
-
-func dispatchMessage(msg *tMSG) {
-	pDispatchMessageW.Call(uintptr(unsafe.Pointer(msg)))
-}
-
-func getMessage(msg *tMSG, hwnd syscall.Handle, msgFilterMin, msgFilterMax uint32) (bool, error) {
-	ret, _, err := pGetMessageW.Call(
-		uintptr(unsafe.Pointer(msg)),
-		uintptr(hwnd),
-		uintptr(msgFilterMin),
-		uintptr(msgFilterMax),
-	)
-	if int32(ret) == -1 {
-		return false, err
-	}
-	return int32(ret) != 0, nil
-}
-
-const (
-	cIDC_ARROW = 32512
-)
-
-func loadCursorResource(cursorName uint32) (syscall.Handle, error) {
-	ret, _, err := pLoadCursorW.Call(
-		uintptr(0),
-		uintptr(uint16(cursorName)),
-	)
-	if ret == 0 {
-		return 0, err
-	}
-	return syscall.Handle(ret), nil
-}
-
-func postQuitMessage(exitCode int32) {
-	pPostQuitMessage.Call(uintptr(exitCode))
-}
-
-const (
-	cCOLOR_WINDOW = 5
-)
 
 type tWNDCLASSEXW struct {
 	size       uint32
@@ -162,6 +110,107 @@ type tWNDCLASSEXW struct {
 	iconSm     syscall.Handle
 }
 
+const (
+	cCS_OWNDC   = 0x0020
+        cCS_HREDRAW = 0x0002
+        cCS_VREDRAW = 0x0001
+)
+
+const (
+	cPM_REMOVE  = 0x0001
+)
+
+const (
+	cWM_DESTROY = 0x0002
+	cWM_CLOSE   = 0x0010
+)
+
+const (
+	cSW_SHOW uint32        = 5
+	cSW_USE_DEFAULT uint32 = 0x80000000
+)
+
+const (
+	cWS_MAXIMIZE_BOX uint32 = 0x00010000
+	cWS_MINIMIZEBOX uint32  = 0x00020000
+	cWS_THICKFRAME uint32   = 0x00040000
+	cWS_SYSMENU uint32      = 0x00080000
+	cWS_CAPTION uint32      = 0x00C00000
+	cWS_VISIBLE uint32      = 0x10000000
+
+	cWS_OVERLAPPEDWINDOW uint32 = 0x00CF0000
+)
+
+func InitWindow()  error {
+        Running := true
+
+	className := "bpeClass"
+
+	instance, err := getModuleHandle()
+	if err != nil {
+		log.Println(err)
+		return err
+	}
+
+	fn := func(hwnd syscall.Handle, msg uint32, wparam, lparam uintptr) uintptr {
+		switch msg {
+		case cWM_CLOSE:
+			Running = false
+		case cWM_DESTROY:
+			Running = false
+		default:
+			ret := defWindowProc(hwnd, msg, wparam, lparam)
+			return ret
+		}
+		return 0
+	}
+
+	wcx := tWNDCLASSEXW{
+		wndProc:    syscall.NewCallback(fn),
+		instance:   instance,
+		className:  syscall.StringToUTF16Ptr(className),
+                style:      cCS_OWNDC | cCS_HREDRAW | cCS_VREDRAW,
+	}
+	wcx.size = uint32(unsafe.Sizeof(wcx))
+
+	if _, err = registerClassEx(&wcx); err != nil {
+		log.Println(err)
+		return err
+	}
+
+	_, err = createWindow(
+		className,
+		"BPE Window",
+		(cWS_VISIBLE | cWS_OVERLAPPEDWINDOW),
+		cSW_USE_DEFAULT,
+		cSW_USE_DEFAULT,
+		cSW_USE_DEFAULT,
+		cSW_USE_DEFAULT,
+		0,
+		0,
+		instance,
+	)
+	if err != nil {
+		log.Println(err)
+		return err
+	}
+
+	for Running {
+		msg := tMSG{}
+		gotMessage, err := peekMessage(&msg, 0, 0, 0, cPM_REMOVE)
+		if err != nil {
+			log.Println(err)
+			return err
+		}
+
+		if gotMessage {
+			translateMessage(&msg)
+			dispatchMessage(&msg)
+		}
+	}
+        return nil
+}
+
 func registerClassEx(wcx *tWNDCLASSEXW) (uint16, error) {
 	ret, _, err := pRegisterClassExW.Call(
 		uintptr(unsafe.Pointer(wcx)),
@@ -174,80 +223,4 @@ func registerClassEx(wcx *tWNDCLASSEXW) (uint16, error) {
 
 func translateMessage(msg *tMSG) {
 	pTranslateMessage.Call(uintptr(unsafe.Pointer(msg)))
-}
-
-func main() {
-	className := "testClass"
-
-	instance, err := getModuleHandle()
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
-	cursor, err := loadCursorResource(cIDC_ARROW)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
-	fn := func(hwnd syscall.Handle, msg uint32, wparam, lparam uintptr) uintptr {
-		switch msg {
-		case cWM_CLOSE:
-			destroyWindow(hwnd)
-		case cWM_DESTROY:
-			postQuitMessage(0)
-		default:
-			ret := defWindowProc(hwnd, msg, wparam, lparam)
-			return ret
-		}
-		return 0
-	}
-
-	wcx := tWNDCLASSEXW{
-		wndProc:    syscall.NewCallback(fn),
-		instance:   instance,
-		cursor:     cursor,
-		background: cCOLOR_WINDOW + 1,
-		className:  syscall.StringToUTF16Ptr(className),
-	}
-	wcx.size = uint32(unsafe.Sizeof(wcx))
-
-	if _, err = registerClassEx(&wcx); err != nil {
-		log.Println(err)
-		return
-	}
-
-	_, err = createWindow(
-		className,
-		"Test Window",
-		(cWS_VISIBLE | cWS_OVERLAPPEDWINDOW),
-		cSW_USE_DEFAULT,
-		cSW_USE_DEFAULT,
-		cSW_USE_DEFAULT,
-		cSW_USE_DEFAULT,
-		0,
-		0,
-		instance,
-	)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
-	for {
-		msg := tMSG{}
-		gotMessage, err := getMessage(&msg, 0, 0, 0)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-
-		if gotMessage {
-			translateMessage(&msg)
-			dispatchMessage(&msg)
-		} else {
-			break
-		}
-	}
 }
